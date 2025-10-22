@@ -1,0 +1,16 @@
+# PyTorch-based ST-PINN Requirements
+# Python >= 3.8 recommended
+
+# Deep Learning Framework
+torch>=2.0.0
+
+# Numerical Computing
+numpy>=1.21.0,<2.0.0
+
+# Optional: For visualization and analysis
+matplotlib>=3.5.0
+scipy>=1.7.0
+
+# Development Tools (optional)
+jupyter>=1.0.0
+ipython>=8.0.0
