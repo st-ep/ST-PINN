@@ -105,16 +105,3 @@ layers = [2, 16, 16, 1]  # Smaller network
 batch_size = 5000        # Smaller batch
 ```
 
-## Documentation
-
-- **Full Testing Report:** [TESTING_REPORT.md](TESTING_REPORT.md)
-- **Original Paper:** README.md
-- **Code Documentation:** Inline comments in source files
-
-## Contact & Issues
-
-For questions about the PyTorch migration, create an issue on GitHub or contact the development team.
-
----
-
-**Ready to train!** 🚀
