@@ -1,8 +1,12 @@
 import time
 import numpy as np
 import torch
+import os  # Added for file saving
 from source.pdes import diffusion_reaction_1d
 from source.utilities import NeuralNet, mean_squared_error, relative_error, set_random_seed, get_device
+# NOTE: Removed plot_pseudo_label_history since this is a standard PINN
+from source.DiffReact_visualization import (plot_loss_history, plot_error_history, plot_solution_comparison_1d,
+                                            plot_solution_snapshots_1d, plot_error_distribution, create_output_dirs)
 
 set_random_seed(1234)
 
@@ -14,19 +18,6 @@ class PhysicsInformedNN:
                  x_data, t_data, u_data, x_test, t_test, u_test, nu, rho, batch_size, layers, log_path, device=None):
         """
         Initialize the PINN model.
-
-        Args:
-            x_init, t_init, u_init: Initial condition points
-            x_l_bound, x_r_bound, t_bound: Boundary condition points
-            x_eqns, t_eqns: Collocation points for PDE
-            x_data, t_data, u_data: Training data points
-            x_test, t_test, u_test: Test data points
-            nu: Diffusion coefficient
-            rho: Reaction rate
-            batch_size: Batch size for training
-            layers: Network architecture
-            log_path: Path for logging
-            device: torch device (cuda/cpu)
         """
         # Device setup
         self.device = device if device is not None else get_device()
@@ -57,6 +48,20 @@ class PhysicsInformedNN:
         self.log_path = log_path
         self.batch_size = batch_size
 
+        # Initialize history tracking for visualization
+        self.loss_history = {
+            'iteration': [],
+            'total_loss': [],
+            'init_loss': [],
+            'bound_loss': [],
+            'eqns_loss': [],
+            'data_loss': [],
+        }
+        self.error_history = {
+            'iteration': [],
+            'error': [],
+        }
+
         # Initialize neural network
         self.net = NeuralNet(x_eqns, t_eqns, layers=self.layers, device=self.device)
 
@@ -67,15 +72,6 @@ class PhysicsInformedNN:
                      x_data, t_data, u_data, x_eqns, t_eqns):
         """
         Compute total loss (initial + boundary + data + PDE residual).
-
-        Args:
-            x_init, t_init, u_init: Initial condition tensors
-            x_l_bound, x_r_bound, t_bound: Boundary condition tensors
-            x_data, t_data, u_data: Data tensors
-            x_eqns, t_eqns: Collocation point tensors
-
-        Returns:
-            loss, init_loss, bound_loss, eqns_loss, data_loss
         """
         # Initial condition loss
         u_init_pred = self.net(x_init, t_init)[0]
@@ -105,10 +101,6 @@ class PhysicsInformedNN:
     def train(self, max_time, adam_it):
         """
         Train the model using Adam optimizer.
-
-        Args:
-            max_time: Maximum training time in hours
-            adam_it: Maximum number of Adam iterations
         """
         N_eqns = self.t_eqns.shape[0]
         self.start_time = time.time()
@@ -139,10 +131,19 @@ class PhysicsInformedNN:
             loss.backward()
             self.optimizer.step()
 
-            # Print progress
+            # Print progress and log loss history
             if self.it % 10 == 0:
                 elapsed = time.time() - self.start_time
                 self.total_time += elapsed / 3600.0
+
+                # Record loss history
+                self.loss_history['iteration'].append(self.it)
+                self.loss_history['total_loss'].append(loss.item())
+                self.loss_history['init_loss'].append(init_loss.item())
+                self.loss_history['bound_loss'].append(bound_loss.item())
+                self.loss_history['eqns_loss'].append(eqns_loss.item())
+                self.loss_history['data_loss'].append(data_loss.item())
+
                 log_item = 'It: %d, Loss: %.3e, Init Loss: %.3e, Bound Loss: %.3e, Eqns Loss: %.3e, ' \
                            'Data Loss: %.3e, Time: %.2fs, Total Time: %.2fh' % \
                            (self.it, loss.item(), init_loss.item(), bound_loss.item(),
@@ -150,10 +151,15 @@ class PhysicsInformedNN:
                 self.logging(log_item)
                 self.start_time = time.time()
 
-            # Evaluate
+            # Evaluate and record error history
             if self.it % 100 == 0:
                 u_pred = self.predict(self.x_test, self.t_test)
                 error_u = relative_error(u_pred, self.u_test.cpu().numpy())
+
+                # Record error history
+                self.error_history['iteration'].append(self.it)
+                self.error_history['error'].append(error_u)
+
                 log_item = 'Error u: %e' % (error_u)
                 self.logging(log_item)
 
@@ -162,13 +168,6 @@ class PhysicsInformedNN:
     def predict(self, x_star, t_star):
         """
         Make predictions at given points.
-
-        Args:
-            x_star: x coordinates (numpy array or tensor)
-            t_star: t coordinates (numpy array or tensor)
-
-        Returns:
-            u_star: Predicted solution (numpy array)
         """
         self.net.eval()
 
@@ -201,53 +200,66 @@ if __name__ == '__main__':
     N_test = 20000
     batch_size = 20000
     layers = [2] + 4 * [32] + [1]
-    create_date = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime(time.time()))
-    log_path = "../output/log/diffreact1D-pinn-%s" % (create_date)
 
-    ### load data
+    # --- START MODIFICATION ---
+    # Define the ABSOLUTE BASE PATH for all outputs
+    BASE_OUTPUT_DIR = "/home/dhoussou/Documents/PINN_Output"
+
+    # Use a unique date/time for logging and data saving
+    current_time_str = time.strftime("%Y%m%d_%H%M%S", time.localtime(time.time()))
+    create_date = f"DR1D_PINN_{current_time_str}"
+
+    # Update log_path to use the absolute path
+    log_path = os.path.join(BASE_OUTPUT_DIR, "log", f"diffreact1D-pinn-{create_date}.log")
+
+    # Create output directories for visualizations (including the 'log' directory, assuming DiffReact_visualization.py is updated)
+    output_dirs = create_output_dirs(BASE_OUTPUT_DIR)
+    # --- END MODIFICATION ---
+
+    ### Load data
     data_path = r'../input/diffreact1D.npy'
     data = np.load(data_path, allow_pickle=True)
     x = data.item()['x']
     t = data.item()['t']
     u = data.item()['u']
 
-    ### arrange data
-    # init
+    ### Arrange data
+    # Initial condition
     idx_init = np.where(t == 0.0)[0]
     x_init = x[idx_init, :]
     t_init = t[idx_init, :]
     u_init = u[idx_init, :]
 
-    # boundary
+    # Boundary condition
     idx_bound = np.where(x == x[0, 0])[0]
     t_bound = t[idx_bound, :]
     x_l_bound = xL * np.ones_like(t_bound)
     x_r_bound = xR * np.ones_like(t_bound)
 
-    ### rearrange data
+    # Rearrange data for training/testing
     x_eqns = x
     t_eqns = t
     u_eqns = u
 
-    # initial
+    # Subsample data points for initial condition
     idx_init = np.random.choice(x_init.shape[0], min(N_init, x_init.shape[0]), replace=False)
     x_init = x_init[idx_init, :]
     t_init = t_init[idx_init, :]
     u_init = u_init[idx_init, :]
 
-    # boundary
+    # Subsample boundary condition points
     idx_bound = np.random.choice(t_bound.shape[0], min(N_bound, t_bound.shape[0]), replace=False)
     x_l_bound = x_l_bound[idx_bound, :]
     x_r_bound = x_r_bound[idx_bound, :]
     t_bound = t_bound[idx_bound, :]
 
-    # intra-domain
+    # Subsample intra-domain data points
     idx_data = np.random.choice(x.shape[0], min(N_data, x.shape[0]), replace=False)
     x_data = x[idx_data, :]
     t_data = t[idx_data, :]
     u_data = u[idx_data, :]
 
-    # test
+    # Subsample test points
     idx_test = np.random.choice(x.shape[0], min(N_test, x.shape[0]), replace=False)
     x_test = x[idx_test, :]
     t_test = t[idx_test, :]
@@ -256,19 +268,41 @@ if __name__ == '__main__':
     model = PhysicsInformedNN(x_init, t_init, u_init, x_l_bound, x_r_bound, t_bound, x_eqns, t_eqns, x_data, t_data,
                               u_data, x_test, t_test, u_test, nu, rho, batch_size, layers, log_path)
 
-    ### train
+    ### Train
     model.train(max_time=10, adam_it=20000)
 
-    ### test
+    ### Test and final prediction
     u_pred = model.predict(x, t)
-    error_u = relative_error(u_pred, u)
-    model.logging('L2 error u: %e' % (error_u))
+    error_u_l2 = relative_error(u_pred, u)
+    model.logging(f'L2 error u: {error_u_l2:e}')
 
-    u_pred = model.predict(x, t)
-    error_u = mean_squared_error(u_pred, u)
-    model.logging('MSE error u: %e' % (error_u))
+    error_u_mse = mean_squared_error(u_pred, u)
+    model.logging(f'MSE error u: {error_u_mse:e}')
 
-    # save prediction
-    data_output_path = "../output/prediction/diffreact1d-pinn-%s.npy" % (create_date)
-    data_output = {'u': u_pred}
-    np.save(data_output_path, data_output)
+    ### Generate Visualizations
+    model.logging("\nGenerating visualizations...")
+
+    # Plot loss history
+    loss_plot_path = f"{output_dirs['loss']}/diffreact1D-pinn-loss-{create_date}.png"
+    plot_loss_history(model.loss_history, loss_plot_path, equation_name="Diffusion-Reaction 1D (PINN)")
+
+    # Plot error history
+    error_plot_path = f"{output_dirs['error']}/diffreact1D-pinn-error-{create_date}.png"
+    plot_error_history(model.error_history, error_plot_path, equation_name="Diffusion-Reaction 1D (PINN)")
+
+    # Plot solution comparison
+    solution_plot_path = f"{output_dirs['solution']}/diffreact1D-pinn-solution-{create_date}.png"
+    plot_solution_comparison_1d(x, t, u, u_pred, solution_plot_path, equation_name="Diffusion-Reaction 1D (PINN)")
+
+    # Plot solution snapshots at specific time points
+    t_unique = np.unique(t)
+    time_snapshots = [t_unique[int(i * len(t_unique) / 4)] for i in range(4)]
+    snapshot_plot_path = f"{output_dirs['solution']}/diffreact1D-pinn-snapshots-{create_date}.png"
+    plot_solution_snapshots_1d(x, t, u, u_pred, time_snapshots, snapshot_plot_path,
+                               equation_name="Diffusion-Reaction 1D (PINN)")
+
+    # Plot error distribution
+    error_dist_path = f"{output_dirs['error']}/diffreact1D-pinn-error-dist-{create_date}.png"
+    plot_error_distribution(u, u_pred, error_dist_path, equation_name="Diffusion-Reaction 1D (PINN)")
+
+    model.logging("All visualizations saved successfully!")
